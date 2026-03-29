@@ -13,6 +13,16 @@ SVN_WC="$SCRIPT_DIR/svn-wc"
 
 RSYNC_EXCLUDES=(--exclude='.git' --exclude='.svn' --exclude='.sync' --exclude='sync.sh')
 
+# Directories that exist in SVN but should NOT be synced to git.
+# These are also excluded from git2svn so rsync --delete does not remove them.
+SVN_ONLY_DIRS=('exdir1' 'exdir2/path1')
+
+# Build rsync exclude flags for SVN-only dirs
+SVN_ONLY_EXCLUDES=()
+for _d in "${SVN_ONLY_DIRS[@]}"; do
+    SVN_ONLY_EXCLUDES+=(--exclude="$_d")
+done
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -34,11 +44,17 @@ load_config() {
 }
 
 # Generate a manifest for a directory: path|md5|mode|size
-# Excludes .git, .svn, .sync, sync.sh
+# Excludes .git, .svn, .sync, sync.sh, and SVN-only dirs
 generate_manifest() {
     local dir="$1"
     local tmpfile
     tmpfile=$(mktemp)
+
+    # Build find exclusions for SVN-only dirs
+    local svn_only_find_args=()
+    for _d in "${SVN_ONLY_DIRS[@]}"; do
+        svn_only_find_args+=(! -path "./${_d}" ! -path "./${_d}/*")
+    done
 
     (
         cd "$dir"
@@ -47,6 +63,7 @@ generate_manifest() {
             ! -path './.svn/*' \
             ! -path './.sync/*' \
             ! -name 'sync.sh' \
+            "${svn_only_find_args[@]}" \
             -print0 \
         | while IFS= read -r -d '' file; do
             local rel="${file#./}"
@@ -321,6 +338,7 @@ cmd_git2svn() {
     log "Syncing files from git-repo/ to svn-wc/..."
     rsync -av --delete \
         "${RSYNC_EXCLUDES[@]}" \
+        "${SVN_ONLY_EXCLUDES[@]}" \
         "${rsync_extra_excludes[@]}" \
         "$GIT_REPO/" "$SVN_WC/"
 
@@ -422,6 +440,7 @@ cmd_svn2git() {
     log "Syncing files from svn-wc/ to git-repo/..."
     rsync -av --delete \
         "${RSYNC_EXCLUDES[@]}" \
+        "${SVN_ONLY_EXCLUDES[@]}" \
         "${rsync_extra_excludes[@]}" \
         "$SVN_WC/" "$GIT_REPO/"
 
@@ -461,6 +480,7 @@ cmd_snapshot() {
     rm -rf "${SNAPSHOT_FILES:?}/"*
     rsync -a \
         "${RSYNC_EXCLUDES[@]}" \
+        "${SVN_ONLY_EXCLUDES[@]}" \
         "$GIT_REPO/" "$SNAPSHOT_FILES/"
 
     log "Snapshot updated. $(wc -l < "$MANIFEST_FILE") file(s) recorded."
