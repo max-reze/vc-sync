@@ -8,6 +8,8 @@ MANIFEST_FILE="$SNAPSHOT_DIR/manifest.txt"
 SNAPSHOT_FILES="$SNAPSHOT_DIR/files"
 CONFIG_FILE="$SYNC_DIR/config"
 LOG_FILE="$SYNC_DIR/sync.log"
+
+# Defaults — overridden by config after load_config
 GIT_REPO="$SCRIPT_DIR/git-repo"
 SVN_WC="$SCRIPT_DIR/svn-wc"
 
@@ -38,9 +40,14 @@ log() {
 die() { echo "ERROR: $*" >&2; exit 1; }
 
 load_config() {
-    [[ -f "$CONFIG_FILE" ]] || die "Not initialized. Run: $0 init <git-url> <svn-url>"
+    [[ -f "$CONFIG_FILE" ]] || die "Not initialized. Run: $0 init"
     # shellcheck source=/dev/null
     source "$CONFIG_FILE"
+    # GIT_DIR and SVN_DIR from config override defaults
+    [[ -n "${GIT_DIR:-}" ]] && GIT_REPO="$GIT_DIR"
+    [[ -n "${SVN_DIR:-}" ]] && SVN_WC="$SVN_DIR"
+    [[ -d "$GIT_REPO" ]] || die "Git directory not found: $GIT_REPO"
+    [[ -d "$SVN_WC" ]]   || die "SVN directory not found: $SVN_WC"
 }
 
 # Generate a manifest for a directory: path|md5|mode|size
@@ -192,52 +199,123 @@ classify_changes() {
 # ---------------------------------------------------------------------------
 
 cmd_init() {
-    local git_url="${1:-}"
-    local svn_url="${2:-}"
-    local git_branch="${3:-main}"
+    local git_dir=""
+    local svn_dir=""
+    local git_url=""
+    local svn_url=""
+    local git_branch=""
 
-    [[ -n "$git_url" ]] || die "Usage: $0 init <git-url> <svn-url> [git-branch]"
-    [[ -n "$svn_url" ]] || die "Usage: $0 init <git-url> <svn-url> [git-branch]"
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --git-dir)    git_dir="$2";    shift 2 ;;
+            --svn-dir)    svn_dir="$2";    shift 2 ;;
+            --git-url)    git_url="$2";    shift 2 ;;
+            --svn-url)    svn_url="$2";    shift 2 ;;
+            --git-branch) git_branch="$2"; shift 2 ;;
+            -h|--help)
+                echo "Usage: $0 init [options]"
+                echo ""
+                echo "From existing directories:"
+                echo "  $0 init --git-dir /path/to/git-repo --svn-dir /path/to/svn-wc"
+                echo ""
+                echo "Clone/checkout from URLs:"
+                echo "  $0 init --git-url <url> --svn-url <url> [--git-branch main]"
+                echo ""
+                echo "Mix (one exists, clone the other):"
+                echo "  $0 init --git-dir /path/to/git-repo --svn-url <url>"
+                return 0
+                ;;
+            *) die "Unknown option: $1. Run '$0 init --help' for usage." ;;
+        esac
+    done
+
+    # Detect existing directories at default paths if not specified
+    if [[ -z "$git_dir" && -d "$GIT_REPO/.git" ]]; then
+        git_dir="$GIT_REPO"
+        log "Auto-detected existing git repo at $git_dir"
+    fi
+    if [[ -z "$svn_dir" && -d "$SVN_WC/.svn" ]]; then
+        svn_dir="$SVN_WC"
+        log "Auto-detected existing SVN working copy at $svn_dir"
+    fi
+
+    # Resolve to absolute paths
+    [[ -n "$git_dir" ]] && git_dir="$(cd "$git_dir" && pwd)"
+    [[ -n "$svn_dir" ]] && svn_dir="$(cd "$svn_dir" && pwd)"
+
+    # Auto-detect remote URL and branch from existing repos
+    if [[ -n "$git_dir" && -d "$git_dir/.git" ]]; then
+        if [[ -z "$git_url" ]]; then
+            git_url=$(git -C "$git_dir" remote get-url origin 2>/dev/null) \
+                || die "Cannot detect git remote URL from $git_dir. Pass --git-url explicitly."
+            log "  Git remote URL: $git_url (auto-detected)"
+        fi
+        if [[ -z "$git_branch" ]]; then
+            git_branch=$(git -C "$git_dir" rev-parse --abbrev-ref HEAD 2>/dev/null) \
+                || git_branch="main"
+            log "  Git branch: $git_branch (auto-detected)"
+        fi
+    fi
+    if [[ -n "$svn_dir" && -d "$svn_dir/.svn" ]]; then
+        if [[ -z "$svn_url" ]]; then
+            svn_url=$(svn info "$svn_dir" --show-item url 2>/dev/null) \
+                || die "Cannot detect SVN URL from $svn_dir. Pass --svn-url explicitly."
+            log "  SVN URL: $svn_url (auto-detected)"
+        fi
+    fi
+
+    # If no existing dir, require URL to clone/checkout
+    if [[ -z "$git_dir" && -z "$git_url" ]]; then
+        die "No git repo found. Provide --git-dir or --git-url. Run '$0 init --help'."
+    fi
+    if [[ -z "$svn_dir" && -z "$svn_url" ]]; then
+        die "No SVN working copy found. Provide --svn-dir or --svn-url. Run '$0 init --help'."
+    fi
+
+    [[ -n "$git_branch" ]] || git_branch="main"
 
     mkdir -p "$SYNC_DIR" "$SNAPSHOT_DIR" "$SNAPSHOT_FILES"
+
+    # Clone git repo if no existing dir
+    if [[ -z "$git_dir" ]]; then
+        git_dir="$GIT_REPO"
+        log "Cloning git repository..."
+        git clone -b "$git_branch" "$git_url" "$git_dir"
+    fi
+
+    # Checkout SVN working copy if no existing dir
+    if [[ -z "$svn_dir" ]]; then
+        svn_dir="$SVN_WC"
+        log "Checking out SVN working copy..."
+        svn checkout "$svn_url" "$svn_dir"
+    fi
 
     # Write config
     cat > "$CONFIG_FILE" <<EOF
 GIT_REMOTE="$git_url"
 GIT_BRANCH="$git_branch"
 SVN_URL="$svn_url"
+GIT_DIR="$git_dir"
+SVN_DIR="$svn_dir"
 EOF
 
-    log "Initializing sync environment..."
+    # Set paths for snapshot
+    GIT_REPO="$git_dir"
+    SVN_WC="$svn_dir"
 
-    # Clone git repo
-    if [[ -d "$GIT_REPO" ]]; then
-        log "git-repo/ already exists, pulling latest..."
-        git -C "$GIT_REPO" pull origin "$git_branch"
-    else
-        log "Cloning git repository..."
-        git clone -b "$git_branch" "$git_url" "$GIT_REPO"
-    fi
-
-    # Checkout SVN working copy
-    if [[ -d "$SVN_WC" ]]; then
-        log "svn-wc/ already exists, updating..."
-        svn update "$SVN_WC"
-    else
-        log "Checking out SVN working copy..."
-        svn checkout "$svn_url" "$SVN_WC"
-    fi
-
-    # Take initial snapshot from git-repo (or whichever has content)
+    # Take initial snapshot
     log "Taking initial snapshot..."
     cmd_snapshot
 
     log "Initialization complete."
     echo ""
-    echo "Directory layout:"
-    echo "  git-repo/   - Git working tree"
-    echo "  svn-wc/     - SVN working copy"
-    echo "  .sync/      - Sync metadata"
+    echo "Config: $CONFIG_FILE"
+    echo "  GIT_DIR=$git_dir"
+    echo "  SVN_DIR=$svn_dir"
+    echo "  GIT_REMOTE=$git_url"
+    echo "  GIT_BRANCH=$git_branch"
+    echo "  SVN_URL=$svn_url"
     echo ""
     echo "Next steps:"
     echo "  ./sync.sh status    - See current state"
@@ -491,7 +569,7 @@ usage() {
 Usage: $0 <command> [options]
 
 Commands:
-  init <git-url> <svn-url> [branch]   Initialize sync environment
+  init [options]                       Initialize (see: init --help)
   status                               Show changes on both sides since last sync
   pull-git                             Pull latest from git remote
   git2svn [--force|--skip-conflicts]   Copy git changes into svn-wc (no commit)
