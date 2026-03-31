@@ -175,6 +175,26 @@ cmd_svn2git() {
     echo "Push:    cd $GIT_REPO && git push origin $GIT_BRANCH"
 }
 
+cmd_revert_git() {
+    load_config
+    log "Reverting all local changes in git-repo..."
+    git -C "$GIT_REPO" checkout -- .
+    git -C "$GIT_REPO" clean -fd
+    log "Git repo reverted to last commit."
+}
+
+cmd_revert_svn() {
+    load_config
+    log "Reverting all local changes in svn-wc..."
+    svn revert -R "$SVN_WC"
+    # Remove unversioned files
+    svn status "$SVN_WC" | grep '^?' | awk '{print $2}' | while IFS= read -r f; do
+        rm -rf "$f"
+        echo "  removed: $f"
+    done
+    log "SVN working copy reverted."
+}
+
 usage() {
     cat <<EOF
 Usage: $0 <command>
@@ -185,6 +205,8 @@ Commands:
   pull-git                                  Pull latest from git remote
   git2svn                                   Copy git changes into SVN dir (no commit)
   svn2git                                   Copy SVN changes into git dir (no commit)
+  revert-git                                Discard all uncommitted changes in git dir
+  revert-svn                                Discard all uncommitted changes in SVN dir
 
 Workflow (git → svn):
   ./sync.sh pull-git
@@ -207,8 +229,10 @@ main() {
         init)     shift; cmd_init "$@" ;;
         status)   cmd_status ;;
         pull-git) cmd_pull_git ;;
-        git2svn)  cmd_git2svn ;;
-        svn2git)  cmd_svn2git ;;
+        git2svn)     cmd_git2svn ;;
+        svn2git)     cmd_svn2git ;;
+        revert-git)  cmd_revert_git ;;
+        revert-svn)  cmd_revert_svn ;;
         -h|--help|"") usage ;;
         *)        die "Unknown command: $1. Run '$0 --help'." ;;
     esac
