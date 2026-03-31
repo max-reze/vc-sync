@@ -2,23 +2,22 @@
 
 ## Context
 
-The project lives in both Git and SVN. Team 1 works exclusively in Git. Team 2 works in SVN and is responsible for performing sync in both directions. Sync is manual/on-demand, and squash commits are acceptable.
+The project lives in both Git and SVN. Team 1 works exclusively in Git. Team 2 works in SVN and is responsible for performing sync in both directions. Sync is manual/on-demand.
 
-**Key constraint**: Sync commands must NOT auto-commit. Team 2 reviews the synced changes before committing to either VCS themselves.
+Sync commands do NOT auto-commit. Team 2 reviews the changes before committing.
 
-## Approach: rsync + snapshot-based conflict detection
+## How it works
 
-Keep Git and SVN as **completely separate, normal repositories**. Use `rsync` for file copying and a **checksum manifest snapshot** to detect conflicts (files changed on both sides since last sync).
+Uses `rsync` to copy files between git and SVN directories. rsync handles new and modified files via mtime+size comparison. Deletes are handled by `rsync --delete` plus VCS bookkeeping (`svn add`/`svn delete` or `git add -A`).
+
+No checksumming, no snapshots, no manifests — just rsync. Typical sync completes in ~0.1s for 500 files.
 
 ## Directory layout
 
 ```
 sync.sh                # Main script
 .sync/
-  snapshot/
-    manifest.txt       # Checksums from last successful sync
-    files/             # Full file copy for 3-way conflict resolution
-  config               # Paths, remote URLs, branch
+  config               # Paths to git and SVN dirs, remote URLs, branch
   sync.log             # Append-only operation log
 ```
 
@@ -26,67 +25,44 @@ The git and SVN directories can live anywhere on disk — paths are stored in `.
 
 ## Setup
 
-### From existing directories (already cloned/checked out)
+Point `sync.sh` at existing git and SVN working copies:
 
 ```bash
 ./sync.sh init --git-dir /path/to/git-repo --svn-dir /path/to/svn-wc
 ```
 
-Remote URLs and branch are auto-detected from the repos. Override if needed:
+Remote URLs and branch are auto-detected. If the directories are named `git-repo/` and `svn-wc/` and sit next to `sync.sh`, they are auto-detected too:
 
 ```bash
-./sync.sh init --git-dir /path/to/git-repo --svn-dir /path/to/svn-wc \
-  --git-url git@github.com:org/project.git --git-branch main
-```
-
-### From URLs (fresh clone/checkout)
-
-```bash
-./sync.sh init --git-url git@github.com:org/project.git --svn-url https://svn.example.com/trunk
-```
-
-Repos are cloned into `git-repo/` and `svn-wc/` next to `sync.sh`.
-
-### Mix (one exists, clone the other)
-
-```bash
-./sync.sh init --git-dir /path/to/git-repo --svn-url https://svn.example.com/trunk
+./sync.sh init
 ```
 
 ## Commands
 
 | Command | What it does |
 |---|---|
-| `./sync.sh init [options]` | Initialize sync environment (see `init --help`) |
-| `./sync.sh status` | Show what changed on each side since last sync (read-only) |
+| `./sync.sh init --git-dir <path> --svn-dir <path>` | Initialize from existing directories |
+| `./sync.sh status` | Dry-run showing what would be synced in each direction |
 | `./sync.sh pull-git` | Pull latest from git remote |
-| `./sync.sh git2svn [--force\|--skip-conflicts]` | Copy git changes into SVN dir — does NOT commit |
-| `./sync.sh svn2git [--force\|--skip-conflicts]` | Copy SVN changes into git dir — does NOT commit |
-| `./sync.sh snapshot` | Record current state as new baseline (run after manual commit) |
+| `./sync.sh git2svn` | Copy git changes into SVN dir (no commit) |
+| `./sync.sh svn2git` | Copy SVN changes into git dir (no commit) |
 
-## Typical workflows
+## Workflows
 
-### Pulling git changes into SVN (Team 1 made changes)
+### Git to SVN (Team 1 made changes)
 
 ```bash
-./sync.sh pull-git              # fetch latest from git remote
-./sync.sh status                # see what changed on each side
-./sync.sh git2svn               # copy files into SVN dir (no commit)
-cd /path/to/svn-wc && svn diff  # Team 2 reviews
-svn commit -m "Sync from git"   # Team 2 commits when satisfied
-cd /path/to/sync && ./sync.sh snapshot  # record new baseline
+./sync.sh pull-git
+./sync.sh git2svn
+cd <svn-dir> && svn diff && svn commit -m "Sync from git"
 ```
 
-### Pushing SVN changes to git (Team 2 made changes)
+### SVN to git (Team 2 made changes)
 
 ```bash
-./sync.sh pull-git              # make sure git is up to date
-./sync.sh status                # see what changed
-./sync.sh svn2git               # copy files into git dir (no commit)
-cd /path/to/git-repo && git diff          # Team 2 reviews
-git add -A && git commit -m "Sync from SVN"
+./sync.sh svn2git
+cd <git-dir> && git diff && git add -A && git commit -m "Sync from SVN"
 git push origin main
-cd /path/to/sync && ./sync.sh snapshot    # record new baseline
 ```
 
 ## SVN-only directories
@@ -99,29 +75,9 @@ Current exclusions:
 
 To modify, edit the `SVN_ONLY_DIRS` array in `sync.sh`.
 
-## Conflict resolution
-
-- **Modified on both sides**: script prints the conflicting files and paths to all three versions (snapshot baseline in `.sync/snapshot/files/`, git version, SVN version) so the developer can use `diff3` or any merge tool.
-- **Deleted on source, modified on destination**: treated as conflict, not auto-deleted.
-- **Added on both sides with identical content**: auto-resolved silently.
-
-Conflict flags:
-- `--force` — source side wins for all conflicts
-- `--skip-conflicts` — sync everything except conflicting files
-
-## Core mechanism
-
-1. **Manifest generation** — sorted list of `(path|md5|mode|size)` per directory, excluding `.git`, `.svn`, `.sync`, and SVN-only dirs.
-2. **Three-way diff** — compare both sides against the snapshot manifest to classify each file as: unchanged / modified-one-side / modified-both (CONFLICT) / added / deleted.
-3. **Conflict gate** — abort on conflicts by default.
-4. **rsync copy** — `rsync -av --delete` with VCS metadata and SVN-only dirs excluded.
-5. **No auto-commit** — script stops after copying files, prints review instructions.
-6. **Snapshot update** — separate `snapshot` command, run after manual commit.
-
 ## Known limitations
 
-- **Line endings**: manifest uses raw bytes for checksums; phantom conflicts possible if git/SVN normalize differently
 - **Empty directories**: git doesn't track them; `rsync --delete` may remove empty SVN dirs
 - **SVN properties** (`svn:executable`, etc.): only the executable bit is preserved
-- **Renames**: appear as delete + add (acceptable given squash commits)
-- **Snapshot must be taken after commit**: forgetting `./sync.sh snapshot` causes stale baselines and false conflicts on next sync
+- **Renames**: appear as delete + add
+- **No conflict detection**: the last sync direction wins. Use `./sync.sh status` before syncing to see what would change
