@@ -14,7 +14,7 @@ RSYNC_EXCLUDES=(--exclude='.git' --exclude='.svn' --exclude='.sync' --exclude='s
 
 # Directories that exist in SVN but should NOT be synced to git.
 # Also excluded from git2svn so rsync --delete does not remove them.
-SVN_ONLY_DIRS=('exdir1' 'exdir2/path1')
+SVN_ONLY_DIRS=('tools' 'reze/config')
 
 # Build rsync exclude flags for SVN-only dirs
 SVN_ONLY_EXCLUDES=()
