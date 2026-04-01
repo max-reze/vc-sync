@@ -175,6 +175,20 @@ cmd_svn2git() {
     echo "Push:    cd $GIT_REPO && git push origin $GIT_BRANCH"
 }
 
+cmd_push_git() {
+    load_config
+    local msg="${1:-Sync update}"
+    log "Committing and pushing to git remote..."
+    git -C "$GIT_REPO" add -A
+    if git -C "$GIT_REPO" diff --cached --quiet; then
+        log "Nothing to commit."
+        return 0
+    fi
+    git -C "$GIT_REPO" commit -m "$msg"
+    git -C "$GIT_REPO" push origin "$GIT_BRANCH"
+    log "Committed and pushed to $GIT_BRANCH."
+}
+
 cmd_revert_git() {
     load_config
     log "Reverting all local changes in git-repo..."
@@ -203,6 +217,7 @@ Commands:
   init --git-dir <path> --svn-dir <path>   Initialize from existing directories
   status                                    Show what would be synced (dry-run)
   pull-git                                  Pull latest from git remote
+  push-git [message]                        Commit all changes and push to git remote
   git2svn                                   Copy git changes into SVN dir (no commit)
   svn2git                                   Copy SVN changes into git dir (no commit)
   revert-git                                Discard all uncommitted changes in git dir
@@ -228,7 +243,8 @@ main() {
     case "${1:-}" in
         init)     shift; cmd_init "$@" ;;
         status)   cmd_status ;;
-        pull-git) cmd_pull_git ;;
+        pull-git)  cmd_pull_git ;;
+        push-git)  shift; cmd_push_git "$@" ;;
         git2svn)     cmd_git2svn ;;
         svn2git)     cmd_svn2git ;;
         revert-git)  cmd_revert_git ;;
