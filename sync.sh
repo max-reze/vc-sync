@@ -10,7 +10,7 @@ LOG_FILE="$SYNC_DIR/sync.log"
 GIT_REPO="$SCRIPT_DIR/git-repo"
 SVN_WC="$SCRIPT_DIR/svn-wc"
 
-RSYNC_EXCLUDES=(--exclude='.git' --exclude='.svn' --exclude='.sync' --exclude='sync.sh')
+RSYNC_EXCLUDES=(--exclude='.git' --exclude='.svn' --exclude='.claude' --exclude='.sync' --exclude='sync.sh')
 
 # Directories that exist in SVN but should NOT be synced to git.
 # Also excluded from git2svn so rsync --delete does not remove them.
